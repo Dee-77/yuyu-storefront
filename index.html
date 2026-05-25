@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Yuyu Online Shopping</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          boxShadow: {
+            sm: 'var(--shadow-sm)',
+            md: 'var(--shadow-md)',
+            lg: 'var(--shadow-lg)'
+          },
+          borderRadius: {
+            sm: 'var(--radius-sm)',
+            md: 'var(--radius-md)',
+            lg: 'var(--radius-lg)'
+          },
+          transitionDuration: {
+            250: '250ms',
+            350: '350ms'
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="./styles/main.css" />
+  
+    <!-- GenMB Capabilities START -->
+    <script>
+// GenMB auth SDK (Capability)
+(function() {
+/**
+ * GenMB Auth SDK
+ * Provides Google Sign-In and Email Magic Link authentication for GenMB-generated apps.
+ *
+ * This SDK is auto-injected and initialized. Use window.genmb.auth:
+ *   window.genmb.auth.ready()          // Wait for session check (async). Auto-verifies magic link tokens from URL.
+ *   window.genmb.auth.signIn()         // Open Google sign-in popup (auto-falls back to redirect)
+ *   window.genmb.auth.sendMagicLink(email) // Send a sign-in link to the email. Returns Promise.
+ *   window.genmb.auth.signOut()        // Sign out user
+ *   window.genmb.auth.getUser()        // Get current user or null
+ *   window.genmb.auth.isAuthenticated() // Check if signed in
+ *   window.genmb.auth.onAuthStateChange(callback) // Subscribe to changes
+ *
+ * User object: { id, email, name, picture }
+ *
+ * Error codes (error.code):
+ *   SIGN_IN_TIMEOUT - Popup sign-in timed out after 120s
+ *   SIGN_IN_FAILED  - Sign-in was rejected or returned an error
+ *   VERIFY_FAILED   - Magic link verification failed (expired or already used)
+ *   NETWORK_ERROR   - Network request failed
+ */
+
+class GenMBGoogleAuth {
+  constructor({ appId, baseUrl, onError }) {
+    if (!appId) {
+      throw new Error('GenMBGoogleAuth: appId is required')
+    }
+
+    this.appId = appId
+    this.baseUrl = (baseUrl || '/api/auth/google').replace(/\/$/, '')
+    this.user = null
+    this.listeners = []
+    this.onError = onError || console.error
+    this._ready = false
+    this._readyPromise = null
+    this._refreshTimer = null
+  }
+
+  /**
+   * Wait for SDK to be ready (session checked).
+   * Auto-verifies magic link tokens if ?magic_token=xxx is in the URL.
+   */
+  async ready() {
+    if (this._ready) return this
+    if (this._readyPromise) return this._readyPromise
+
+    var self = this
+    this._readyPromise = this.checkSession().then(function () {
+      // Auto-verify magic link token if present in URL and no existing session
+      if (!self.user) {
+        var params = new URLSearchParams(window.location.search)
+        var magicToken = params.get('magic_token')
+        if (magicToken) {
+          return self.verifyMagicLink(magicToken).catch(function () {
+            // Swallow error - cleanup happens below
+          }).then(function () {
+            // Clean up URL regardless of verification result
+            params.delete('magic_token')
+            var cleanUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '') + window.location.hash
+            window.history.replaceState({}, '', cleanUrl)
+          })
+        }
+      }
+    }).then(function () {
+      self._ready = true
+      return self
+    })
+    return this._readyPromise
+  }
+
+  /**
+   * Sign in with Google. Tries popup first, auto-falls back to redirect if blocked.
+   */
+  async signIn() {
+    return new Promise((resolve, reject) => {
+      let settled = false
+
+      var width = 500
+      var height = 600
+      var left = window.screenX + (window.outerWidth - width) / 2
+      var top = window.screenY + (window.outerHeight - height) / 2
+
+      var popup = window.open(
+        this.baseUrl + '/authorize?app_id=' + encodeURIComponent(this.appId) + '&redirect=popup',
+        'genmb-google-signin',
+        'width=' + width + ',height=' + height + ',left=' + left + ',top=' + top + ',popup=1'
+      )
+
+      if (!popup || popup.closed) {
+        // Popup blocked - fall back to full-page redirect
+        window.location.href = this.baseUrl + '/authorize?app_id=' + encodeURIComponent(this.appId) + '&redirect=' + encodeURIComponent(window.location.href)
+        // Resolve with null since page will navigate away
+        resolve(null)
+        return
+      }
+
+      var cleanup = function () {
+        clearTimeout(timeout)
+        clearInterval(checkClosed)
+        window.removeEventListener('message', handleMessage)
+      }
+
+      var self = this
+
+      var timeout = setTimeout(function () {
+        if (settled) return
+        settled = true
+        cleanup()
+        popup.close()
+        var error = new Error("Sign-in took too long. Please try again.")
+        error.code = 'SIGN_IN_TIMEOUT'
+        self.onError(error)
+        reject(error)
+      }, 120000)
+
+      var handleMessage = function (event) {
+        var origin = event.origin
+        var isGenmb = origin === 'https://genmb.com' || origin.endsWith('.genmb.com')
+        var isLocalhost = origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')
+        if (!isGenmb && !isLocalhost) return
+
+        if (settled) return
+        settled = true
+        cleanup()
+
+        if (event.data && event.data.error) {
+          var error = new Error(event.data.error)
+          error.code = 'SIGN_IN_FAILED'
+          self.onError(error)
+          reject(error)
+        } else if (event.data && event.data.user) {
+          self.user = event.data.user
+          self._notifyListeners()
+          self._startRefreshTimer()
+          resolve(self.user)
+        }
+      }
+
+      var checkClosed = setInterval(function () {
+        if (popup.closed && !settled) {
+          settled = true
+          cleanup()
+          resolve(null)
+        }
+      }, 500)
+
+      window.addEventListener('message', handleMessage)
+    })
+  }
+
+  /**
+   * Send a magic link sign-in email.
+   * Always resolves (returns success even if email doesn't exist, to prevent enumeration).
+   * @param {string} email - User's email address
+   * @returns {Promise<{success: boolean, data?: object}>}
+   */
+  async sendMagicLink(email) {
+    try {
+      var res = await fetch('/api/auth/email/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, app_id: this.appId }),
+        credentials: 'include'
+      })
+      return await res.json()
+    } catch (err) {
+      var error = new Error("We couldn't send the sign-in link. Check your connection and try again.")
+      error.code = 'NETWORK_ERROR'
+      this.onError(error)
+      throw error
+    }
+  }
+
+  /**
+   * Verify a magic link token. Called automatically by ready() if URL contains ?magic_token=xxx.
+   * Can also be called manually.
+   * @param {string} token - The magic link token
+   * @returns {Promise<User|null>}
+   */
+  async verifyMagicLink(token) {
+    try {
+      var res = await fetch(
+        '/api/auth/email/verify?token=' + encodeURIComponent(token) + '&app_id=' + encodeURIComponent(this.appId),
+        { credentials: 'include' }
+      )
+      if (!res.ok) {
+        var error = new Error("This sign-in link has expired or already been used. Send yourself a new one.")
+        error.code = 'VERIFY_FAILED'
+        this.onError(error)
+        return null
+      }
+      var data = await res.json()
+      if (data.success && data.user) {
+        this.user = data.user
+        this._notifyListeners()
+        this._startRefreshTimer()
+      }
+      return this.user
+    } catch (err) {
+      var error = new Error("We couldn't sign you in. Check your connection and try again.")
+      error.code = 'NETWORK_ERROR'
+      this.onError(error)
+      return null
+    }
+  }
+
+  /**
+   * Sign out the current user.
+   */
+  async signOut() {
+    this._stopRefreshTimer()
+
+    try {
+      await fetch(this.baseUrl + '/signout?app_id=' + encodeURIComponent(this.appId), {
+        method: 'POST',
+        credentials: 'include'
+      })
+    } catch (err) {
+      err.code = 'NETWORK_ERROR'
+      this.onError(err)
+    }
+
+    this.user = null
+    this._notifyListeners()
+  }
+
+  /**
+   * Check if user has an active session. Also refreshes the session expiry.
+   */
+  async checkSession() {
+    try {
+      var res = await fetch(this.baseUrl + '/session?app_id=' + encodeURIComponent(this.appId), {
+        credentials: 'include'
+      })
+
+      if (res.ok) {
+        this.user = await res.json()
+        this._notifyListeners()
+        this._startRefreshTimer()
+        // Refresh session expiry in the background
+        this._refreshSession()
+        return this.user
+      }
+      this._stopRefreshTimer()
+      return null
+    } catch (err) {
+      err.code = 'NETWORK_ERROR'
+      this.onError(err)
+      return null
+    }
+  }
+
+  /**
+   * Get the current user.
+   */
+  getUser() {
+    return this.user
+  }
+
+  /**
+   * Check if user is authenticated.
+   */
+  isAuthenticated() {
+    return this.user !== null
+  }
+
+  /**
+   * Subscribe to auth state changes.
+   */
+  onAuthStateChange(callback) {
+    this.listeners.push(callback)
+    callback(this.user)
+    var self = this
+    return function () {
+      self.listeners = self.listeners.filter(function (l) { return l !== callback })
+    }
+  }
+
+  /**
+   * Refresh the session to extend its expiry (fire-and-forget).
+   */
+  _refreshSession() {
+    fetch(this.baseUrl + '/refresh?app_id=' + encodeURIComponent(this.appId), {
+      method: 'POST',
+      credentials: 'include'
+    }).catch(function () {
+      // Silent - refresh is best-effort
+    })
+  }
+
+  /**
+   * Start periodic session refresh (every 30 minutes).
+   */
+  _startRefreshTimer() {
+    this._stopRefreshTimer()
+    var self = this
+    this._refreshTimer = setInterval(function () {
+      if (self.user) {
+        self._refreshSession()
+      }
+    }, 30 * 60 * 1000) // 30 minutes
+  }
+
+  /**
+   * Stop periodic session refresh.
+   */
+  _stopRefreshTimer() {
+    if (this._refreshTimer) {
+      clearInterval(this._refreshTimer)
+      this._refreshTimer = null
+    }
+  }
+
+  _notifyListeners() {
+    var self = this
+    this.listeners.forEach(function (listener) {
+      try {
+        listener(self.user)
+      } catch (err) {
+        console.error('Error in auth state listener:', err)
+      }
+    })
+  }
+}
+
+// Export for ES modules (when loaded via import)
+if (typeof window !== 'undefined') {
+  window.GenMBGoogleAuth = GenMBGoogleAuth;
+}
+
+
+// Auto-initialize
+window.genmb = window.genmb || {};
+const config = {
+  "appId": "5sF8hoVzIvQr",
+  "baseUrl": "/api/auth/google"
+};
+window.genmb.auth = new GenMBGoogleAuth(config);
+window.genmb.auth.ready();
+})();
+</script>
+    <script>
+// GenMB billing SDK (Capability)
+(function() {
+/**
+ * GenMB Billing SDK
+ *
+ * Auto-injected; available at window.genmb.billing. Zero setup - just call:
+ *   window.genmb.billing.checkout({ amount: 9.99, currency: 'usd', productName: 'PDF download' })
+ *   window.genmb.billing.subscribe({ amount: 9, currency: 'usd', interval: 'month', productName: 'Pro' })
+ *   window.genmb.billing.openPortal({ returnUrl: location.href })
+ *   window.genmb.billing.reportUsage({ subscriptionItemId, quantity })
+ *
+ * All amounts are in major units (9.99 = $9.99). The SDK converts to cents
+ * before hitting the backend. Currency defaults to USD.
+ *
+ * Error codes (error.code):
+ *   CONNECT_REQUIRED  - $500 free-tier cap reached; app owner must connect
+ *                       Stripe before new sales. Show a friendly message;
+ *                       the in-editor banner already nudges the owner.
+ *   OVER_CAP          - single amount alone exceeds the cap
+ *   BILLING_DISABLED  - owner explicitly turned billing off
+ *   AUTH_REQUIRED     - subscribe/portal called without signed-in user
+ *   AMOUNT_INVALID    - amount under Stripe minimum (50 cents) or non-numeric
+ *   HMAC_INVALID      - SDK token rejected (cached page over 48h old; reload)
+ *   NETWORK_ERROR
+ */
+
+class GenMBBilling {
+  constructor({ appId, baseUrl, billingToken, onError } = {}) {
+    if (!appId) throw new Error('GenMBBilling: appId is required')
+    if (!billingToken) throw new Error('GenMBBilling: billingToken is required')
+    this.appId = appId
+    this.baseUrl = ((baseUrl || '/api/billing').replace(/\/$/, '')) + '/' + appId
+    this.token = billingToken
+    this.customer = null
+    this.listeners = []
+    this.onError = onError || (function (e) { console.error('[genmb.billing]', e) })
+    this._ready = false
+    this._readyPromise = null
+  }
+
+  async ready() {
+    if (this._ready) return this
+    if (this._readyPromise) return this._readyPromise
+    var self = this
+    this._readyPromise = this._refreshCustomer().then(function () {
+      self._ready = true
+      // If returning from Checkout, surface the session id once for app-side handling.
+      try {
+        var params = new URLSearchParams(window.location.search)
+        if (params.get('session_id')) {
+          self._notify({ type: 'checkout_return', sessionId: params.get('session_id') })
+        }
+      } catch (_) {}
+      return self
+    })
+    return this._readyPromise
+  }
+
+  getCustomer() { return this.customer }
+
+  onCustomerChange(callback) {
+    if (typeof callback !== 'function') return function () {}
+    this.listeners.push(callback)
+    try { callback(this.customer) } catch (_) {}
+    var self = this
+    return function () {
+      self.listeners = self.listeners.filter(function (l) { return l !== callback })
+    }
+  }
+
+  async checkout(opts) {
+    var args = opts || {}
+    var amountCents = this._toCents(args.amount)
+    var body = {
+      amount_cents: amountCents,
+      currency: (args.currency || 'usd').toLowerCase(),
+      product_name: args.productName || 'Purchase',
+      success_url: args.successUrl || this._defaultSuccessUrl(),
+      cancel_url: args.cancelUrl || window.location.href,
+      end_user_email: args.endUserEmail || null,
+      metadata: args.metadata || null,
+    }
+    var data = await this._fetch('/checkout', body)
+    if (args.redirect !== false && data.url) {
+      window.location.href = data.url
+    }
+    return data
+  }
+
+  async subscribe(opts) {
+    var args = opts || {}
+    var body = {
+      success_url: args.successUrl || this._defaultSuccessUrl(),
+      cancel_url: args.cancelUrl || window.location.href,
+      price_id: args.priceId || null,
+      amount_cents: args.amount != null ? this._toCents(args.amount) : null,
+      currency: args.currency || (args.amount != null ? 'usd' : null),
+      interval: args.interval || null,
+      product_name: args.productName || null,
+    }
+    var data = await this._fetch('/subscribe', body)
+    if (args.redirect !== false && data.url) {
+      window.location.href = data.url
+    }
+    return data
+  }
+
+  async openPortal(opts) {
+    var args = opts || {}
+    var body = { return_url: args.returnUrl || window.location.href }
+    var data = await this._fetch('/portal', body)
+    if (args.redirect !== false && data.url) {
+      window.location.href = data.url
+    }
+    return data
+  }
+
+  async reportUsage(opts) {
+    var args = opts || {}
+    return this._fetch('/usage', {
+      subscription_item_id: args.subscriptionItemId,
+      quantity: args.quantity,
+      timestamp: args.timestamp || null,
+      action: args.action || 'increment',
+    })
+  }
+
+  // ─── internals ─────────────────────────────────────────────────────────
+
+  async _refreshCustomer() {
+    try {
+      var res = await fetch(this.baseUrl + '/customer', {
+        method: 'GET',
+        credentials: 'include',
+        headers: { 'X-Billing-Token': this.token },
+      })
+      if (!res.ok) {
+        this.customer = null
+        return
+      }
+      var json = await res.json()
+      var data = (json && json.data) || null
+      if (data && data.exists === false) {
+        this.customer = null
+      } else {
+        this.customer = data
+      }
+      this._notify(this.customer)
+    } catch (_) {
+      this.customer = null
+    }
+  }
+
+  _notify(payload) {
+    for (var i = 0; i < this.listeners.length; i++) {
+      try { this.listeners[i](payload) } catch (e) { this.onError(e) }
+    }
+  }
+
+  _toCents(amount) {
+    if (typeof amount !== 'number' || !isFinite(amount) || amount <= 0) {
+      var err = new Error("The amount has to be a positive number.")
+      err.code = 'AMOUNT_INVALID'
+      throw err
+    }
+    return Math.round(amount * 100)
+  }
+
+  _defaultSuccessUrl() {
+    var url = window.location.origin + window.location.pathname
+    return url + '?session_id={CHECKOUT_SESSION_ID}'
+  }
+
+  async _fetch(path, body) {
+    var resp
+    try {
+      resp = await fetch(this.baseUrl + path, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Billing-Token': this.token,
+        },
+        body: JSON.stringify(body || {}),
+      })
+    } catch (e) {
+      var nerr = new Error((e && e.message) || "Check your internet connection and try again.")
+      nerr.code = 'NETWORK_ERROR'
+      throw nerr
+    }
+    var json = null
+    try { json = await resp.json() } catch (_) {}
+    if (!resp.ok) {
+      var err = new Error((json && json.error_message) || resp.statusText || "Something went wrong. Please try again.")
+      err.code = (json && json.error_code) || 'NETWORK_ERROR'
+      err.onboardUrl = json && json.data && json.data.onboard_url
+      err.status = resp.status
+      throw err
+    }
+    return (json && json.data) || {}
+  }
+}
+
+// expose for the auto-init wrapper
+if (typeof window !== 'undefined') {
+  window.GenMBBilling = GenMBBilling
+}
+
+
+// Auto-initialize
+window.genmb = window.genmb || {};
+const config = {
+  "appId": "5sF8hoVzIvQr",
+  "baseUrl": "/api/billing",
+  "billingToken": "3Gk5BApZQQzkYXC3HEAno6wjoIRO26I6_zlVdHLAIV4"
+};
+window.genmb.billing = new GenMBBilling(config);
+window.genmb.billing.ready();
+})();
+</script>
+    <script>
+// GenMB address SDK (Capability)
+(function() {
+/**
+ * GenMB Address SDK - window.genmb.address
+ *
+ * Address validation + autocomplete via Google Maps Platform when a Maps API key
+ * is configured. Falls back to a postal-code regex validator when not configured.
+ */
+class GenMBAddress {
+  constructor({ appId, baseUrl } = {}) {
+    if (!appId) throw new Error('GenMBAddress: appId is required')
+    this.appId = appId
+    this.baseUrl = ((baseUrl || '/api/address').replace(/\/$/, '')) + '/' + appId
+  }
+
+  async ready() { return this }
+
+  async validate(address) { return this._post('/validate', { address }) }
+
+  async autocomplete(query, opts = {}) {
+    const qs = new URLSearchParams({ q: query, ...opts })
+    const res = await fetch(`${this.baseUrl}/autocomplete?${qs}`, { credentials: 'include' })
+    const json = await res.json()
+    return json.data !== undefined ? json.data : json
+  }
+
+  async getPlaceDetails(placeId) {
+    const res = await fetch(`${this.baseUrl}/places/${encodeURIComponent(placeId)}`, { credentials: 'include' })
+    const json = await res.json()
+    return json.data !== undefined ? json.data : json
+  }
+
+  format(address, locale) {
+    if (!address) return ''
+    const parts = [address.line1, address.line2, address.city, address.region, address.postalCode, address.country]
+    return parts.filter(Boolean).join(', ')
+  }
+
+  async _post(path, body) {
+    const res = await fetch(this.baseUrl + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      const e = new Error(err.error || `address ${path} failed (${res.status})`)
+      e.code = err.code || `HTTP_${res.status}`
+      throw e
+    }
+    const json = await res.json()
+    return json.data !== undefined ? json.data : json
+  }
+}
+
+window.GenMBAddress = GenMBAddress
+
+
+// Auto-initialize
+window.genmb = window.genmb || {};
+const config = {
+  "appId": "5sF8hoVzIvQr",
+  "baseUrl": "/api/address"
+};
+window.genmb.address = new GenMBAddress(config);
+window.genmb.address.ready();
+})();
+</script>
+    <script>
+// GenMB translate SDK (Capability)
+(function() {
+/**
+ * GenMB Translate SDK - window.genmb.translate
+ * Google Cloud Translation for multilingual storefronts and UI.
+ */
+class GenMBTranslate {
+  constructor({ appId, baseUrl } = {}) {
+    if (!appId) throw new Error('GenMBTranslate: appId is required')
+    this.appId = appId
+    this.baseUrl = ((baseUrl || '/api/translate').replace(/\/$/, '')) + '/' + appId
+    this._cache = new Map()
+  }
+  async ready() { return this }
+  async text(input, targetLang, sourceLang) {
+    const key = `${input}|${targetLang}|${sourceLang || ''}`
+    if (this._cache.has(key)) return this._cache.get(key)
+    const result = await this._post('/text', { input, targetLang, sourceLang })
+    this._cache.set(key, result)
+    return result
+  }
+  async batch(inputs, targetLang) { return this._post('/batch', { inputs, targetLang }) }
+  async detect(text) { return this._post('/detect', { text }) }
+  async languages() {
+    const res = await fetch(this.baseUrl + '/languages', { credentials: 'include' })
+    const json = await res.json()
+    return json.data !== undefined ? json.data : json
+  }
+  async _post(path, body) {
+    const res = await fetch(this.baseUrl + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(body),
+    })
+    const json = await res.json()
+    if (!res.ok) throw Object.assign(new Error(json.error || 'translate failed'), { code: json.code })
+    return json.data !== undefined ? json.data : json
+  }
+}
+window.GenMBTranslate = GenMBTranslate
+
+
+// Auto-initialize
+window.genmb = window.genmb || {};
+const config = {
+  "appId": "5sF8hoVzIvQr",
+  "baseUrl": "/api/translate"
+};
+window.genmb.translate = new GenMBTranslate(config);
+window.genmb.translate.ready();
+})();
+</script>
+    <!-- GenMB Capabilities END -->
+  </head>
+<body class="bg-[hsl(var(--background))] text-[hsl(var(--foreground))] antialiased">
+  <div id="root"></div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
